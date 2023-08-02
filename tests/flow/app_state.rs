@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod app_state {
-
-    use flow::app_state::AppState;
+    use flowrs_wasm::app_state::AppState;
 
     #[test]
     fn should_deserialize_empty_state() {
@@ -18,7 +17,7 @@ mod app_state {
 
     #[test]
     #[should_panic(
-        expected = r#"You attemnted to send to an output where no succesor Node is connected."#
+        expected = r#"You attempted to send to an output where no succesor Node is connected."#
     )]
     fn should_deserialize_non_empty_state() {
         let json_str = r#"

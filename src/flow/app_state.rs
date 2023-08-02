@@ -3,14 +3,11 @@ use std::{any::Any, collections::HashMap, ops::Add, sync::Arc};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::{
-    add::AddNode,
-    basic::BasicNode,
+use flowrs::{
     connection::{connect, ConnectError, Input, Output, RuntimeConnectable},
-    node::Node,
-    node::{Context, State},
-    nodes::debug::DebugNode,
+    node::{Context, Node, State},
 };
+use flowrs_std::{add::AddNode, basic::BasicNode, debug::DebugNode};
 
 #[derive(Clone, Debug)]
 pub struct FlowType(pub Arc<dyn Any + Send + Sync>);
