@@ -6,6 +6,8 @@ mod app_state {
     fn should_deserialize_empty_state() {
         let json_str = r#"
     {
+        "threads": 1,
+        "duration": 1,
         "nodes": [],
         "edges": []
     }

@@ -167,16 +167,16 @@ impl AppState {
         let (sender, receiver) = mpsc::channel();
         let flow = Flow::new("flow_1", Version::new(1, 0, 0), self.nodes.to_owned());
         // TODO shouldn't be hardcoded
-        let num_threads = 4;
+        let num_threads = self.threads;
         let thread_handle = thread::spawn(move || {
             let mut executor =
-                MultiThreadedExecutor::new(num_threads, self.change_observer.clone());
+                MultiThreadedExecutor::new(num_threads, self.change_observer);
             let scheduler = RoundRobinScheduler::new();
             let _ = sender.send(executor.controller());
             let _ = executor.run(flow, scheduler);
         });
         let controller = receiver.recv().unwrap();
-        thread::sleep(Duration::from_secs(3));
+        thread::sleep(self.max_duration);
         println!("CANCEL");
         controller.lock().unwrap().cancel();
         println!("DONE");
