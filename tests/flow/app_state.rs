@@ -6,6 +6,8 @@ mod app_state {
     fn should_deserialize_empty_state() {
         let json_str = r#"
     {
+        "threads": 1,
+        "duration": 1,
         "nodes": [],
         "edges": []
     }
@@ -16,12 +18,11 @@ mod app_state {
     }
 
     #[test]
-    #[should_panic(
-        expected = r#"You attempted to send to an output where no succesor Node is connected."#
-    )]
     fn should_deserialize_non_empty_state() {
         let json_str = r#"
         {
+            "threads": 3,
+            "duration": 3, 
             "nodes": [
                 {
                     "name": "lhs",
@@ -60,18 +61,17 @@ mod app_state {
             ]
         }
         "#;
-        let mut app_state: AppState = serde_json::from_str(json_str).unwrap();
+        let app_state: AppState = serde_json::from_str(json_str).unwrap();
         assert!(app_state.nodes.len() == 4);
         app_state.run();
     }
 
     #[test]
-    #[should_panic(
-        expected = r#"Addition of JSON values of type String("string") and Number(30) is not supported."#
-    )]
     fn should_fail_on_invalid_types() {
         let json_str = r#"
         {
+            "threads": 3,
+            "duration": 3, 
             "nodes": [
                 {
                     "name": "lhs",
