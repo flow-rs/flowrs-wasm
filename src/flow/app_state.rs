@@ -1,19 +1,30 @@
-use std::{any::Any, collections::HashMap, ops::Add, sync::Arc};
+use std::{
+    any::Any,
+    collections::HashMap,
+    ops::Add,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::Duration,
+};
+
+use anyhow::Error;
 
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use flowrs::{
-    connection::{connect, ConnectError, Input, Output, RuntimeConnectable},
-    node::{Context, Node, State},
+    connection::{connect, ConnectError, Input, Output, RuntimeNode},
+    executor::{Executor, MultiThreadedExecutor},
+    flow::Flow,
+    node::{ChangeObserver, Context, InitError, State},
+    scheduler::RoundRobinScheduler,
+    version::Version,
 };
-use flowrs_std::{add::AddNode, basic::BasicNode, debug::DebugNode};
+use flowrs_std::{add::AddNode, debug::DebugNode, value::ValueNode};
 
 #[derive(Clone, Debug)]
 pub struct FlowType(pub Arc<dyn Any + Send + Sync>);
 
-pub trait RuntimeNode: Node + RuntimeConnectable {}
-impl<T> RuntimeNode for T where T: Node + RuntimeConnectable {}
 // This implementation gives some control over which types should be
 // addable throughout the entire flow. As of now only homogenious types
 // allow addition.
@@ -75,42 +86,50 @@ impl Add for FlowType {
 pub struct AppState {
     // For a yet TBD reason a HashMap of dyn types looses track of channel pointers.
     // As a workaround Nodes are resolved in a two step process and stored in a Vec.
-    pub nodes: Vec<Box<dyn RuntimeNode + Send>>,
+    pub nodes: Vec<Arc<Mutex<dyn RuntimeNode + Send>>>,
     pub node_idc: HashMap<String, usize>,
     pub context: State<Context>,
+    pub change_observer: ChangeObserver,
+    pub threads: usize,
+    pub max_duration: Duration,
 }
 
 impl AppState {
-    pub fn new() -> AppState {
+    pub fn new(threads: usize, max_duration: Duration) -> AppState {
         AppState {
             nodes: Vec::new(),
             node_idc: HashMap::new(),
             context: State::new(Context::new()),
+            change_observer: ChangeObserver::new(),
+            threads,
+            max_duration
         }
     }
 
-    pub fn add_node(&mut self, name: &str, kind: String, props: Value) -> String {
-        let node: Box<dyn RuntimeNode + Send> = match kind.as_str() {
-            "nodes.arithmetics.add" => Box::new(AddNode::<FlowType, FlowType, FlowType>::new(
-                name,
-                self.context.clone(),
-                Value::Null,
+    pub fn add_node(
+        &mut self,
+        name: &str,
+        kind: String,
+        props: Value,
+    ) -> Result<String, InitError> {
+        let node: Arc<Mutex<dyn RuntimeNode + Send>> = match kind.as_str() {
+            "nodes.arithmetics.add" => Arc::new(Mutex::new(
+                AddNode::<FlowType, FlowType, FlowType>::new(name, &self.change_observer),
             )),
-            "nodes.basic" => Box::new(BasicNode::new(
+            "nodes.basic" => Arc::new(Mutex::new(ValueNode::new(
                 name,
-                self.context.clone(),
+                &self.change_observer,
                 FlowType(Arc::new(props)),
-            )),
-            "nodes.debug" => Box::new(DebugNode::<FlowType>::new(
+            ))),
+            "nodes.debug" => Arc::new(Mutex::new(DebugNode::<FlowType>::new(
                 name,
-                self.context.clone(),
-                Value::Null,
-            )),
-            _ => panic!("Nodes of type {} are not yet supported.", kind),
+                &self.change_observer,
+            ))),
+            _ => return Err(InitError::Other(Error::msg("Nodetype not yet supported"))),
         };
         self.nodes.push(node);
         self.node_idc.insert(name.to_owned(), self.nodes.len() - 1);
-        name.to_owned()
+        Ok(name.to_owned())
     }
 
     pub fn connect_at(
@@ -124,6 +143,8 @@ impl AppState {
         let rhs_idx = self.node_idc.get(&rhs).unwrap().clone();
         // TODO: RefCell is not an ideal solution here.
         let out_edge = self.nodes[lhs_idx]
+            .lock()
+            .unwrap()
             .output_at(index_out)
             .downcast_ref::<Output<FlowType>>()
             .expect(&format!(
@@ -132,6 +153,8 @@ impl AppState {
             ))
             .clone();
         let in_edge = self.nodes[rhs_idx]
+            .lock()
+            .unwrap()
             .input_at(index_in)
             .downcast_ref::<Input<FlowType>>()
             .unwrap()
@@ -140,16 +163,24 @@ impl AppState {
         Ok(())
     }
 
-    pub fn run(&mut self) {
-        self.nodes.iter_mut().for_each(|job| job.on_init());
-        self.nodes.iter_mut().for_each(|job| job.on_ready());
-        // Capped at 100 here for testing purposes. TODO: change to infinite loop with stop condition.
-        for _ in 0..100 {
-            self.nodes.iter_mut().for_each(|job| {
-                let _ = job.update();
-            });
-        }
-        self.nodes.iter_mut().for_each(|job| job.on_shutdown());
+    pub fn run(self) {
+        let (sender, receiver) = mpsc::channel();
+        let flow = Flow::new("flow_1", Version::new(1, 0, 0), self.nodes.to_owned());
+        // TODO shouldn't be hardcoded
+        let num_threads = 4;
+        let thread_handle = thread::spawn(move || {
+            let mut executor =
+                MultiThreadedExecutor::new(num_threads, self.change_observer.clone());
+            let scheduler = RoundRobinScheduler::new();
+            let _ = sender.send(executor.controller());
+            let _ = executor.run(flow, scheduler);
+        });
+        let controller = receiver.recv().unwrap();
+        thread::sleep(Duration::from_secs(3));
+        println!("CANCEL");
+        controller.lock().unwrap().cancel();
+        println!("DONE");
+        thread_handle.join().unwrap();
     }
 }
 
@@ -174,6 +205,8 @@ struct JsonEdge {
 
 #[derive(Deserialize)]
 struct JsonData {
+    threads: usize,
+    duration: u64,
     nodes: Vec<JsonNode>,
     edges: Vec<JsonEdge>,
 }
@@ -183,10 +216,10 @@ impl<'de> Deserialize<'de> for AppState {
     where
         D: Deserializer<'de>,
     {
-        let mut app_state = AppState::new();
         let json_data: JsonData = JsonData::deserialize(deserializer)?;
+        let mut app_state = AppState::new(json_data.threads, Duration::from_secs(json_data.duration));
         json_data.nodes.iter().for_each(|node| {
-            app_state.add_node(&node.name, node.kind.clone(), node.props.to_owned());
+            let _ = app_state.add_node(&node.name, node.kind.clone(), node.props.to_owned());
         });
         json_data.edges.iter().for_each(|edge| {
             let _ = app_state.connect_at(
