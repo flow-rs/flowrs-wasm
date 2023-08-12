@@ -5,6 +5,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
+use core::fmt::Debug;
 
 use anyhow::Error;
 
@@ -13,8 +14,26 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use flowrs_std::{add::AddNode, debug::DebugNode, value::ValueNode};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FlowType(pub Arc<dyn Any + Send + Sync>);
+
+impl Debug for FlowType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(v) = self.0.downcast_ref::<f64>() {
+            return f.write_str(&v.to_string())
+        }
+        if let Some(v) = self.0.downcast_ref::<Value>() {
+            return match v {
+                Value::Null => todo!(),
+                Value::Bool(b) => f.write_str(&b.to_string()),
+                Value::Number(b) =>f.write_str(&b.to_string()),
+                Value::String(b) =>f.write_str(&b.to_string()),
+                _ => f.debug_tuple("FlowType").field(&self.0).finish(),
+            }
+        }
+        f.debug_tuple("FlowType").field(&self.0).finish()
+    }
+}
 
 // This implementation gives some control over which types should be
 // addable throughout the entire flow. As of now only homogenious types
