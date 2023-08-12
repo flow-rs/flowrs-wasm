@@ -3,23 +3,14 @@ use std::{
     collections::HashMap,
     ops::Add,
     sync::{mpsc, Arc, Mutex},
-    thread,
     time::Duration,
 };
 
 use anyhow::Error;
 
+use flowrs::{connection::{RuntimeNode, Output, Input, connect}, node::{Context, ChangeObserver, InitError}, exec::{execution::{StandardExecutor, Executor}, node_updater::SingleThreadedNodeUpdater}, sched::round_robin::RoundRobinScheduler, flow_impl::{Flow, NodeId}, version::Version};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-
-use flowrs::{
-    connection::{connect, ConnectError, Input, Output, RuntimeNode},
-    executor::{Executor, MultiThreadedExecutor},
-    flow::Flow,
-    node::{ChangeObserver, Context, InitError, State},
-    scheduler::RoundRobinScheduler,
-    version::Version,
-};
 use flowrs_std::{add::AddNode, debug::DebugNode, value::ValueNode};
 
 #[derive(Clone, Debug)]
@@ -88,7 +79,7 @@ pub struct AppState {
     // As a workaround Nodes are resolved in a two step process and stored in a Vec.
     pub nodes: Vec<Arc<Mutex<dyn RuntimeNode + Send>>>,
     pub node_idc: HashMap<String, usize>,
-    pub context: State<Context>,
+    pub context: Context,
     pub change_observer: ChangeObserver,
     pub threads: usize,
     pub max_duration: Duration,
@@ -99,10 +90,10 @@ impl AppState {
         AppState {
             nodes: Vec::new(),
             node_idc: HashMap::new(),
-            context: State::new(Context::new()),
+            context: Context::new(),
             change_observer: ChangeObserver::new(),
             threads,
-            max_duration
+            max_duration,
         }
     }
 
@@ -114,17 +105,15 @@ impl AppState {
     ) -> Result<String, InitError> {
         let node: Arc<Mutex<dyn RuntimeNode + Send>> = match kind.as_str() {
             "nodes.arithmetics.add" => Arc::new(Mutex::new(
-                AddNode::<FlowType, FlowType, FlowType>::new(name, &self.change_observer),
+                AddNode::<FlowType, FlowType, FlowType>::new(Some(&self.change_observer)),
             )),
             "nodes.basic" => Arc::new(Mutex::new(ValueNode::new(
-                name,
-                &self.change_observer,
                 FlowType(Arc::new(props)),
+                Some(&self.change_observer),
             ))),
-            "nodes.debug" => Arc::new(Mutex::new(DebugNode::<FlowType>::new(
-                name,
+            "nodes.debug" => Arc::new(Mutex::new(DebugNode::<FlowType>::new(Some(
                 &self.change_observer,
-            ))),
+            )))),
             _ => return Err(InitError::Other(Error::msg("Nodetype not yet supported"))),
         };
         self.nodes.push(node);
@@ -138,7 +127,7 @@ impl AppState {
         rhs: String,
         index_in: usize,
         index_out: usize,
-    ) -> Result<(), ConnectError<FlowType>> {
+    ) -> Result<(), Error> {
         let lhs_idx = self.node_idc.get(&lhs).unwrap().clone();
         let rhs_idx = self.node_idc.get(&rhs).unwrap().clone();
         // TODO: RefCell is not an ideal solution here.
@@ -164,23 +153,14 @@ impl AppState {
     }
 
     pub fn run(self) {
-        let (sender, receiver) = mpsc::channel();
-        let flow = Flow::new("flow_1", Version::new(1, 0, 0), self.nodes.to_owned());
-        // TODO shouldn't be hardcoded
-        let num_threads = self.threads;
-        let thread_handle = thread::spawn(move || {
-            let mut executor =
-                MultiThreadedExecutor::new(num_threads, self.change_observer);
-            let scheduler = RoundRobinScheduler::new();
-            let _ = sender.send(executor.controller());
-            let _ = executor.run(flow, scheduler);
-        });
-        let controller = receiver.recv().unwrap();
-        thread::sleep(self.max_duration);
-        println!("CANCEL");
-        controller.lock().unwrap().cancel();
-        println!("DONE");
-        thread_handle.join().unwrap();
+        let (sender, _) = mpsc::channel();
+        let node_map: HashMap<u128, Arc<Mutex<(dyn RuntimeNode + Send + 'static)>>> = self.nodes.into_iter().enumerate().map(|n| (n.0 as u128, n.1)).collect();
+        let flow = Flow::new("wasm", Version::new(0, 0, 1), node_map);
+        let node_updater = SingleThreadedNodeUpdater::new(None);
+        let mut executor = StandardExecutor::new(self.change_observer);
+        let scheduler = RoundRobinScheduler::new();
+        let _ = sender.send(executor.controller());
+        let _ = executor.run(flow, scheduler, node_updater);
     }
 }
 
@@ -217,7 +197,8 @@ impl<'de> Deserialize<'de> for AppState {
         D: Deserializer<'de>,
     {
         let json_data: JsonData = JsonData::deserialize(deserializer)?;
-        let mut app_state = AppState::new(json_data.threads, Duration::from_secs(json_data.duration));
+        let mut app_state =
+            AppState::new(json_data.threads, Duration::from_secs(json_data.duration));
         json_data.nodes.iter().for_each(|node| {
             let _ = app_state.add_node(&node.name, node.kind.clone(), node.props.to_owned());
         });

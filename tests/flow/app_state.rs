@@ -21,7 +21,7 @@ mod app_state {
     fn should_deserialize_non_empty_state() {
         let json_str = r#"
         {
-            "threads": 3,
+            "threads": 1,
             "duration": 3, 
             "nodes": [
                 {
@@ -111,7 +111,7 @@ mod app_state {
         }
         "#;
 
-        let mut app_state: AppState = serde_json::from_str(json_str).unwrap();
+        let app_state: AppState = serde_json::from_str(json_str).unwrap();
         assert!(app_state.nodes.len() == 4);
         app_state.run();
     }
