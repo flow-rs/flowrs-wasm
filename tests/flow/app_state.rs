@@ -14,7 +14,7 @@ mod app_state {
     "#;
 
         let json_data: AppState = serde_json::from_str(json_str).unwrap();
-        assert!(json_data.nodes.len() == 0);
+        assert_eq!(json_data.nodes.len(), 0);
     }
 
     #[test]
@@ -62,11 +62,12 @@ mod app_state {
         }
         "#;
         let app_state: AppState = serde_json::from_str(json_str).unwrap();
-        assert!(app_state.nodes.len() == 4);
+        assert_eq!(app_state.nodes.len(), 4);
         app_state.run();
     }
 
     #[test]
+    #[should_panic = r#"Addition of JSON values of type String("string") and Number(30) is not supported."#]
     fn should_fail_on_invalid_types() {
         let json_str = r#"
         {
@@ -112,7 +113,7 @@ mod app_state {
         "#;
 
         let app_state: AppState = serde_json::from_str(json_str).unwrap();
-        assert!(app_state.nodes.len() == 4);
+        assert_eq!(app_state.nodes.len(), 4);
         app_state.run();
     }
 }
