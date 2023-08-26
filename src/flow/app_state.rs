@@ -1,14 +1,31 @@
 use std::{
     collections::HashMap,
-    time::Duration, sync::{Mutex, Arc, mpsc::channel},
+    sync::{mpsc::channel, Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::Error;
 
-use flowrs::{connection::{RuntimeNode, Output, Input, connect}, node::{Context, ChangeObserver, InitError}, exec::{execution::{StandardExecutor, Executor}, node_updater::SingleThreadedNodeUpdater}, sched::round_robin::RoundRobinScheduler, flow_impl::{Flow, NodeId}, version::Version};
+use flowrs::{
+    connection::{connect, Input, Output, RuntimeNode},
+    exec::{
+        execution::{Executor, StandardExecutor},
+        node_updater::SingleThreadedNodeUpdater,
+    },
+    flow_impl::Flow,
+    node::{ChangeObserver, Context, InitError},
+    sched::round_robin::RoundRobinScheduler,
+    version::Version,
+};
+use flowrs_img::transform::DecodeImageNode;
+use flowrs_std::{
+    add::AddNode,
+    debug::DebugNode,
+    value::{ValueNode, ValueUpdateNode},
+    vec::{CountWindow, MergeToVecNode},
+};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use flowrs_std::{add::AddNode, debug::DebugNode, value::ValueNode};
 
 use super::dynamic_flow::FlowType;
 
@@ -42,16 +59,31 @@ impl AppState {
         props: Value,
     ) -> Result<String, InitError> {
         let node: Arc<Mutex<dyn RuntimeNode + Send>> = match kind.as_str() {
-            "nodes.arithmetics.add" => Arc::new(Mutex::new(
-                AddNode::<FlowType, FlowType, FlowType>::new(Some(&self.change_observer)),
-            )),
-            "nodes.basic" => Arc::new(Mutex::new(ValueNode::new(
+            "std.binops.add" => Arc::new(Mutex::new(AddNode::<FlowType, FlowType, FlowType>::new(
+                Some(&self.change_observer),
+            ))),
+            "std.value" => Arc::new(Mutex::new(ValueNode::new(
                 FlowType(Arc::new(props)),
                 Some(&self.change_observer),
             ))),
-            "nodes.debug" => Arc::new(Mutex::new(DebugNode::<FlowType>::new(Some(
+            "std.valueupdate" => Arc::new(Mutex::new(ValueUpdateNode::new(
+                FlowType(Arc::new(props.as_u64().unwrap() as u8)),
+                Some(&self.change_observer),
+            ))),
+            "std.debug" => Arc::new(Mutex::new(DebugNode::<FlowType>::new(Some(
                 &self.change_observer,
             )))),
+            "img.decode" => Arc::new(Mutex::new(DecodeImageNode::new(Some(
+                &self.change_observer,
+            )))),
+            "std.transform.vec" => Arc::new(Mutex::new(MergeToVecNode::<
+                FlowType,
+                FlowType,
+                CountWindow<FlowType>,
+            >::new(
+                Some(&self.change_observer),
+                CountWindow::<FlowType>::new(props.as_u64().unwrap() as usize),
+            ))),
             _ => return Err(InitError::Other(Error::msg("Nodetype not yet supported"))),
         };
         self.nodes.push(node);
@@ -90,15 +122,19 @@ impl AppState {
         Ok(())
     }
 
-    pub fn run(self) {
-        let (sender, _) = channel();
-        let node_map: HashMap<u128, Arc<Mutex<(dyn RuntimeNode + Send + 'static)>>> = self.nodes.into_iter().enumerate().map(|n| (n.0 as u128, n.1)).collect();
+    pub fn run(self) -> Result<(), Error> {
+        let node_map: HashMap<u128, Arc<Mutex<(dyn RuntimeNode + Send + 'static)>>> = self
+            .nodes
+            .into_iter()
+            .enumerate()
+            .map(|n| (n.0 as u128, n.1))
+            .collect();
         let flow = Flow::new("wasm", Version::new(0, 0, 1), node_map);
         let node_updater = SingleThreadedNodeUpdater::new(None);
         let mut executor = StandardExecutor::new(self.change_observer);
         let scheduler = RoundRobinScheduler::new();
-        let _ = sender.send(executor.controller());
-        let _ = executor.run(flow, scheduler, node_updater);
+        executor.run(flow, scheduler, node_updater)?;
+        Ok(())
     }
 }
 
