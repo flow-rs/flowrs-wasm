@@ -14,8 +14,7 @@ use flowrs::{
     },
     flow_impl::Flow,
     node::{ChangeObserver, Context, InitError},
-    sched::round_robin::RoundRobinScheduler,
-    version::Version,
+    sched::round_robin::RoundRobinScheduler
 };
 use flowrs_img::transform::DecodeImageNode;
 use flowrs_std::{
@@ -129,7 +128,7 @@ impl AppState {
             .enumerate()
             .map(|n| (n.0 as u128, n.1))
             .collect();
-        let flow = Flow::new("wasm", Version::new(0, 0, 1), node_map);
+        let flow = Flow::new_empty();
         let node_updater = SingleThreadedNodeUpdater::new(None);
         let mut executor = StandardExecutor::new(self.change_observer);
         let scheduler = RoundRobinScheduler::new();
